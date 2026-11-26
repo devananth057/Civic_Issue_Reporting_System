@@ -1,0 +1,216 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Fieldworker - Water</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .status-badge { padding: 2px 5px; border-radius: 3px; color:white; font-size:0.85em; }
+    .status-NEW { background: #007bff; }
+    .status-ASSIGNED { background: #ffc107; color:black; }
+    .status-IN_PROGRESS { background: #17a2b8; }
+    .status-VERIFICATION { background: #6c757d; }
+    .status-RESOLVED { background: #28a745; }
+    input[type=file] { display:inline-block; margin-right:5px; }
+  </style>
+</head>
+<body>
+<main class="container">
+  <div class="nav"><h1>Fieldworker - Water</h1><button id="logout">Logout</button></div>
+  <section>
+    <h2>Assigned Tasks (Water)</h2>
+    <table id="issuesTable">
+      <thead>
+        <tr><th>ID</th><th>Title</th><th>Status</th><th>Deadline</th><th>Action</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const token = localStorage.getItem('token');
+if(!token) location.href='/';
+document.getElementById('logout').onclick = ()=>{ localStorage.clear(); location.href='/' };
+
+const dept = 3;
+const countdowns = {};
+
+// Convert seconds to readable format
+function secondsToReadable(sec){
+  if(sec===null||sec===undefined) return '—';
+  if(sec<=0) return '⚠️ Passed';
+  const d=Math.floor(sec/86400), h=Math.floor((sec%86400)/3600), m=Math.floor((sec%3600)/60), s=Math.floor(sec%60);
+  if(d>0) return `${d}d ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+// Load issues
+async function loadIssues(){
+  const res = await fetch('/api/issues?department_id='+dept, {
+    headers:{'Authorization':'Bearer '+token}
+  });
+
+  const j = await res.json();
+  const tbody = document.querySelector('#issuesTable tbody'); 
+  tbody.innerHTML='';
+
+  (j.issues || [])
+    .filter(i => i.status !== 'DELETED' && i.deleted_by_head !== 1)
+    .forEach(i => {
+
+      const tr = document.createElement('tr');
+      let actionHtml = '—';
+
+      if (i.status === 'IN_PROGRESS' && !i.deleted_by_head) {
+        actionHtml = `
+          <input type="file" id="img${i.id}">
+          <button onclick="markComplete(${i.id})">Mark Complete</button>
+        `;
+      }
+
+      tr.innerHTML = `
+        <td>${i.id}</td>
+
+        <td>
+          <strong>${i.title || ''}</strong><br>
+          <small>${i.description || ''}</small>
+
+          ${i.address ? `<div><small>📍 ${i.address}</small></div>` : ''}
+
+          ${i.latitude && i.longitude ? `
+            <div>
+              <a href="https://www.google.com/maps?q=${i.latitude},${i.longitude}" target="_blank">
+                🗺 View Location
+              </a>
+            </div>
+          ` : ''}
+
+          ${i.image_path ? `
+            <div>
+              <img src="${i.image_path}"
+                   style="max-width:120px;max-height:80px;margin-top:5px;">
+            </div>
+          ` : ''}
+        </td>
+
+        <td>
+          <span class="status-badge status-${i.status}">
+            ${i.status}
+          </span>
+        </td>
+
+        <td>
+          <span id="cd-${i.id}-fieldworker">—</span>
+        </td>
+
+        <td id="action-${i.id}">${actionHtml}</td>
+
+      `;
+
+      tbody.appendChild(tr);
+
+      /* ✅ INITIALIZE FIELDWORKER DEADLINE (CRITICAL FIX) */
+      if (i.fieldworker_seconds != null) {
+        const key = `${i.id}-fieldworker`;
+        countdowns[key] = i.fieldworker_seconds;
+
+        const el = document.getElementById(`cd-${i.id}-fieldworker`);
+        if (el) {
+          el.textContent = secondsToReadable(i.fieldworker_seconds);
+          el.style.color = i.fieldworker_seconds <= 0 ? 'red' : '';
+        }
+      }
+
+      /* ✅ STOP COUNTDOWN IF RESOLVED */
+      if (i.status === 'RESOLVED') {
+        countdowns[`${i.id}-fieldworker`] = 0;
+      }
+    });
+}
+
+// Mark task complete
+async function markComplete(issueId){
+  const fileInput = document.getElementById('img' + issueId);
+  const btn = document.getElementById('btn' + issueId);
+
+  // 🔴 Photo mandatory
+  if (!fileInput || !fileInput.files.length) {
+    alert('Photo upload is mandatory before marking complete');
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append('issueId', issueId);
+  fd.append('image', fileInput.files[0]);
+
+  const res = await fetch('/api/issues/complete', {
+    method:'POST',
+    headers:{ 'Authorization':'Bearer ' + token },
+    body: fd
+  });
+
+  const j = await res.json();
+  if (!res.ok) {
+    alert(j.error || 'Failed to complete');
+    return;
+  }
+
+  alert(j.message || 'Completed successfully');
+countdowns[`${issueId}-fieldworker`] = 0;
+  /* ✅ HIDE BUTTON + FILE INPUT AFTER SUCCESS */
+  if (btn) btn.remove();
+  if (fileInput) fileInput.remove();
+
+  /* ✅ SHOW STATUS */
+  const td = document.getElementById('action-' + issueId);
+  if (td) td.innerHTML = '✔️ Completed (Waiting for verification)';
+
+  loadIssues(); // keep UI in sync
+}
+
+
+// Socket.io
+const socket = io();
+socket.on('connect',()=>console.log('socket connected'));
+
+// Update countdowns from server
+socket.on('deadlineTick', payload=>{
+  payload.forEach(p=>{
+    const key = `${p.issueId}-fieldworker`;
+    const el = document.getElementById('cd-'+p.issueId+'-fieldworker');
+    if(el && p.role==='fieldworker' && countdowns[key]!==0){
+      countdowns[key] = p.secondsLeft;
+      el.textContent = secondsToReadable(p.secondsLeft);
+      el.style.color = p.secondsLeft<=0 ? 'red':'';
+    }
+  });
+});
+
+// Escalation alerts
+socket.on('escalationAlert', data=>{
+  alert(`⚠️ Escalation: Issue ${data.issueId} escalated to ${data.role.toUpperCase()} in ${data.departmentName}`);
+  loadIssues();
+});
+
+// Smooth countdown tick
+setInterval(()=>{
+  Object.keys(countdowns).forEach(k=>{
+    if(countdowns[k]===0) return; // Stop if resolved
+    countdowns[k]-=1;
+    const [issueId, role] = k.split('-');
+    const el = document.getElementById(`cd-${issueId}-${role}`);
+    if(!el) return;
+    el.textContent = secondsToReadable(countdowns[k]);
+    el.style.color = countdowns[k]<=0 ? 'red':'';
+  });
+},1000);
+
+// Initial load & reload on events
+loadIssues();
+socket.on('issueUpdated', ()=> loadIssues());
+socket.on('issueCreated', ()=> loadIssues());
+</script>
+</body>
+</html>

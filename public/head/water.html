@@ -1,0 +1,411 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Head Dashboard</title>
+  <link rel="stylesheet" href="/css/style.css">
+
+  <style>
+    .status-badge {
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: white;
+      font-size: 0.85em;
+      font-weight: 600;
+    }
+    .status-NEW { background:#007bff; }
+    .status-ASSIGNED { background:#ffc107; color:black; }
+    .status-IN_PROGRESS { background:#17a2b8; }
+    .status-VERIFICATION { background:#6c757d; }
+    .status-RESOLVED { background:#28a745; }
+.status-ESCALATED { background:#dc3545; }
+
+    .status-boxes {
+      display:flex;
+      gap:20px;
+      margin-bottom:20px;
+    }
+
+    .status-box {
+      flex:1;
+      border:1px solid #ccc;
+      border-radius:6px;
+      padding:10px;
+    }
+
+    .active-box { border-color:#28a745; }
+    .working-box { border-color:#17a2b8; }
+    .inactive-box { border-color:#dc3545; }
+
+    .status-box ul {
+      margin:0;
+      padding-left:18px;
+    }
+  </style>
+</head>
+
+<body>
+<main class="container">
+  <div class="nav">
+    <h1>Head Dashboard</h1>
+    <button id="logout">Logout</button>
+  </div>
+
+  <!-- ADD SUPERVISOR -->
+<section>
+  <h2>Add Supervisor</h2>
+  <form id="addSupervisorForm">
+    <input name="name" placeholder="Name" required>
+    <input name="phone" placeholder="Phone" required>
+    <input name="password" placeholder="Password" type="password" required>
+    <input name="ward" placeholder="Ward (eg: Ward-1)" required>
+
+    <select name="department" required>
+      <option value="1">Water</option>
+      
+    </select>
+
+    <button>Add Supervisor</button>
+  </form>
+</section>
+
+
+  <!-- SUPERVISOR STATUS -->
+  <section>
+    <h2>Supervisors Status</h2>
+    <div class="status-boxes">
+      <div class="status-box active-box">
+        <h3>🟢 Active</h3>
+        <ul id="activeList"></ul>
+      </div>
+      <div class="status-box working-box">
+        <h3>🔵 Working</h3>
+        <ul id="workingList"></ul>
+      </div>
+      <div class="status-box inactive-box">
+        <h3>🔴 Inactive</h3>
+        <ul id="inactiveList"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ISSUES -->
+  <section>
+    <h2>Issues</h2>
+    <table id="issuesTable">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Title</th>
+          <th>Status</th>
+<th>Supervisor</th>
+<th>Supervisor DL</th>
+<th>Fieldworker DL</th>
+<th>Action</th>
+
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+
+<script src="/socket.io/socket.io.js"></script>
+
+<script>
+  const countdowns = {};
+/* ================= AUTH ================= */
+const token = localStorage.getItem("token");
+if (!token) location.href = "/";
+document.getElementById("logout").onclick = () => {
+  localStorage.clear();
+  location.href = "/";
+};
+
+const dept = 1;
+
+/* ================= ADD SUPERVISOR ================= */
+document.getElementById("addSupervisorForm").onsubmit = async e => {
+  e.preventDefault();
+  const f = e.target;
+
+  const res = await fetch("/api/users/addSupervisor", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + token
+    },
+    body: JSON.stringify({
+      name: f.name.value.trim(),
+      phone: f.phone.value.trim(),
+      password: f.password.value.trim(),
+      ward: f.ward.value.trim(),
+      department_id: f.department.value
+    })
+  });
+
+  const j = await res.json();
+  alert(j.message || j.error);
+  f.reset();
+  loadSupervisorsByStatus();
+};
+
+/* ================= SUPERVISOR STATUS (FINAL) ================= */
+async function loadSupervisorsByStatus(){
+  const res = await fetch(
+    `/api/users/supervisorsByStatus?department_id=${dept}`,
+    { headers:{ "Authorization":"Bearer " + token } }
+  );
+  const j = await res.json();
+
+  activeList.innerHTML = "";
+  workingList.innerHTML = "";
+  inactiveList.innerHTML = "";
+
+  (j.active || []).forEach(u =>
+    activeList.innerHTML += `<li>${u.name}</li>`
+  );
+  (j.working || []).forEach(u =>
+    workingList.innerHTML += `<li>${u.name}</li>`
+  );
+  (j.inactive || []).forEach(u =>
+    inactiveList.innerHTML += `<li>${u.name}</li>`
+  );
+}
+
+/* ================= LOAD ISSUES ================= */
+async function loadIssues(){
+  const res = await fetch(
+    `/api/issues?department_id=${dept}`,
+    { headers:{ "Authorization":"Bearer " + token } }
+  );
+
+  const j = await res.json();
+  const tbody = document.querySelector("#issuesTable tbody");
+  tbody.innerHTML = "";
+
+  (j.issues || [])
+    .filter(i => i.status !== 'DELETED' && i.deleted_by_head !== 1)
+    .forEach(i => {
+
+      let action = "";
+
+      /* ---------- DELETE (ONLY BEFORE ASSIGNMENT) ---------- */
+if (i.status === 'NEW' && !i.supervisor_name) {
+  action += `
+    <button style="background:#dc3545;color:white"
+            onclick="deleteIssue(${i.id})">
+      Delete
+    </button>
+  `;
+}
+/* ---------- ASSIGN SUPERVISOR (FINAL & FAIR) ---------- */
+if (
+  i.status === "NEW" ||
+  (
+    i.status === "ESCALATED" &&
+    i.supervisor_seconds <= 0   // 👈 IMPORTANT FIX
+  )
+) {
+  action += `
+    <br>
+    <select id="sup${i.id}"></select>
+
+    <input type="datetime-local"
+           id="supDL${i.id}"
+           style="margin-top:5px;width:160px;">
+
+    ${
+      i.status === "ESCALATED"
+        ? `<div style="color:#dc3545;font-weight:600;">
+             ⚠️ Supervisor deadline missed – Head reassignment required
+           </div>`
+        : ""
+    }
+
+    <button onclick="assignSupervisor(${i.id})">Assign</button>
+  `;
+
+  setTimeout(() => loadActiveDropdown(i.id), 0);
+}
+
+      /* ---------- ROW ---------- */
+      tbody.innerHTML += `
+        <tr>
+          <td style="text-align:center;">${i.id}</td>
+          <td>
+            <strong>${i.title}</strong><br>
+            <small>${i.description || ''}</small>
+             ${i.address ? `<div><small>📍 ${i.address}</small></div>` : ''}
+
+  ${i.latitude && i.longitude ? `
+    <div>
+      <a href="https://www.google.com/maps?q=${i.latitude},${i.longitude}"
+         target="_blank">
+         🗺 View Location
+      </a>
+    </div>
+  ` : ''}
+
+  ${i.image_path ? `
+    <div>
+      <img src="${i.image_path}"
+           style="max-width:120px;max-height:80px;margin-top:5px;">
+    </div>
+  ` : ''}
+          </td>
+          <td style="text-align:center;">
+            <span class="status-badge status-${i.status}">
+              ${i.status}
+            </span>
+          </td>
+          <td style="text-align:center;">
+            ${i.supervisor_name || "Unassigned"}
+          </td>
+          <td><span id="cd-${i.id}-supervisor">—</span></td>
+          <td><span id="cd-${i.id}-fieldworker">—</span></td>
+          <td>${action}</td>
+        </tr>
+      `;
+
+      /* ✅ INITIALIZE DEADLINES — THIS IS THE KEY */
+      if (i.supervisor_seconds != null) {
+        const elSup = document.getElementById(`cd-${i.id}-supervisor`);
+        if (elSup) elSup.textContent = secondsToReadable(i.supervisor_seconds);
+      }
+
+      if (i.fieldworker_seconds != null) {
+        const elFW = document.getElementById(`cd-${i.id}-fieldworker`);
+        if (elFW) elFW.textContent = secondsToReadable(i.fieldworker_seconds);
+      }
+
+    });
+}
+
+/* ================= ACTIVE SUPERVISOR DROPDOWN (FIXED) ================= */
+async function loadActiveDropdown(issueId){
+  const sel = document.getElementById("sup" + issueId);
+  if (!sel) return;
+
+  const res = await fetch(
+    `/api/users/dropdown?role=supervisor&department_id=${dept}`,
+    { headers:{ "Authorization":"Bearer " + token } }
+  );
+
+  const j = await res.json();
+
+  sel.innerHTML = `<option value="">Select Active Supervisor</option>`;
+  (j.users || []).forEach(u => {
+    sel.innerHTML += `<option value="${u.phone}">${u.name}</option>`;
+  });
+}
+
+/* ================= ASSIGN SUPERVISOR ================= */
+async function assignSupervisor(issueId){
+  const sel = document.getElementById("sup" + issueId);
+  const dl = document.getElementById("supDL" + issueId).value;
+
+  if (!sel.value) return alert("Select supervisor");
+  if (!dl) return alert("Set supervisor deadline");
+
+  const res = await fetch("/api/issues/assignSupervisor",{
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      "Authorization":"Bearer " + token
+    },
+    body:JSON.stringify({
+      issueId,
+      phone: sel.value,
+      deadline: dl
+    })
+  });
+
+  const j = await res.json();
+  alert(j.message || j.error);
+
+  loadIssues();
+  loadSupervisorsByStatus();
+}
+
+async function deleteIssue(id) {
+  const reason = prompt('Enter reason for deleting this issue:');
+
+  if (!reason || !reason.trim()) {
+    alert('Delete reason is required');
+    return;
+  }
+
+  const res = await fetch('/api/issues/' + id, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ reason })
+  });
+
+  const j = await res.json();
+
+  if (!res.ok) {
+    alert(j.error || 'Delete failed');
+    return;
+  }
+
+  alert(j.message);
+  loadIssues();
+}
+
+function secondsToReadable(sec){
+  if(sec === null || sec === undefined) return '—';
+  if(sec <= 0) return '⚠️ Passed';
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+
+  if (d > 0) return `${d}d ${h}:${m}:${s}`;
+  return `${h}:${m}:${s}`;
+}
+
+
+/* ================= SOCKET ================= */
+/* ================= SOCKET ================= */
+const socket = io();
+
+socket.on("issueUpdated", () => {
+  loadIssues();
+  loadSupervisorsByStatus();
+});
+
+socket.on("issueResolved", () => {
+  loadIssues();
+  loadSupervisorsByStatus();
+});
+
+/* 🔥 DEADLINE COUNTDOWN (ADD THIS HERE) */
+socket.on('deadlineTick', payload => {
+  payload.forEach(p => {
+    const el = document.getElementById(`cd-${p.issueId}-${p.role}`);
+    if (!el) return;
+
+    if (p.secondsLeft <= 0) {
+      el.textContent = '⚠️ Deadline Passed';
+      el.style.color = 'red';
+    } else {
+      el.textContent = secondsToReadable(p.secondsLeft);
+      el.style.color = '';
+    }
+  });
+});
+
+
+
+
+/* ================= INIT ================= */
+loadIssues();
+loadSupervisorsByStatus();
+</script>
+</body>
+</html>

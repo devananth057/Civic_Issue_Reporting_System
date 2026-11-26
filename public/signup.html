@@ -1,0 +1,41 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Sign up</title><link rel="stylesheet" href="/css/style.css"></head><body>
+<main class="container">
+  <h1>Sign Up</h1>
+  <form id="signupForm">
+    <input name="name" placeholder="Name" required>
+    <input name="phone" placeholder="Phone" required>
+    <input name="password" type="password" placeholder="Password" required>
+    <input name="ward" placeholder="Ward (e.g. Ward-1)">
+    <select name="role">
+      <option value="citizen">Citizen</option>
+      
+      <option value="supervisor">Supervisor</option>
+      <option value="fieldworker">Fieldworker</option>
+    </select>
+    <select name="department_id">
+      <option value="">Select department (if staff)</option>
+      <option value="1">Water</option>
+      <option value="2">Sanitation</option>
+      <option value="3">PWD</option>
+      <option value="4">Electricity</option>
+    </select>
+    <button type="submit">Sign up</button>
+  </form>
+  <div id="msg"></div>
+  <p><a href="/">Back to Login</a></p>
+</main>
+<script>
+document.getElementById('signupForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  const res = await fetch('/api/auth/signup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  const j = await res.json();
+  if (j.success) {
+    localStorage.setItem('token', j.token);
+    if (j.user.role === 'citizen') location.href = '/citizen/dashboard.html';
+    else if (j.user.role === 'head') location.href = `/head/${j.user.department_id===1?'water':j.user.department_id===2?'sanitation':j.user.department_id===3?'pwd':'electricity'}.html`;
+    else if (j.user.role === 'supervisor') location.href = `/supervisor/${j.user.department_id===1?'water':j.user.department_id===2?'sanitation':j.user.department_id===3?'pwd':'electricity'}.html`;
+    else if (j.user.role === 'fieldworker') location.href = `/fieldworker/${j.user.department_id===1?'water':j.user.department_id===2?'sanitation':j.user.department_id===3?'pwd':'electricity'}.html`;
+  } else { document.getElementById('msg').innerText = j.error || 'Signup failed'; }
+};
+</script></body></html>

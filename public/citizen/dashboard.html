@@ -1,0 +1,387 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Citizen Dashboard</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .preview{max-width:120px;max-height:80px;margin:5px 0}
+    .status-badge{padding:2px 5px;border-radius:3px;color:#fff;font-size:.85em}
+    .status-NEW{background:#007bff}
+    .status-ASSIGNED{background:#ffc107;color:#000}
+    .status-IN_PROGRESS{background:#17a2b8}
+    .status-VERIFICATION{background:#6c757d}
+    .status-RESOLVED{background:#28a745}
+    .status-ESCALATED{background:#dc3545}
+    main.container{max-width:900px;margin:20px auto;font-family:sans-serif}
+    li{border:1px solid #ccc;padding:10px;margin-bottom:10px;border-radius:5px}
+    button{padding:5px 10px;margin-top:5px}
+    .nav{display:flex;justify-content:space-between;align-items:center}
+    .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+      background:rgba(0,0,0,.5);align-items:center;justify-content:center;z-index:999}
+    .modal-box{background:#fff;padding:20px;border-radius:8px;width:320px}
+    input{width:100%;margin:6px 0;padding:6px}
+  </style>
+</head>
+
+<body>
+
+<!-- SETTINGS MODAL -->
+<div class="modal" id="settingsModal">
+  <div class="modal-box">
+    <h3>⚙️ Change Password</h3>
+
+    <div id="stepOld">
+      <input type="password" id="oldPass" placeholder="Old password">
+      <button onclick="sendOTP()">Send OTP</button>
+    </div>
+
+    <div id="stepOTP" style="display:none">
+      <input id="otp" placeholder="Enter OTP">
+      <input type="password" id="newPass" placeholder="New password">
+      <button onclick="verifyOTP()">Change Password</button>
+    </div>
+
+    <button onclick="closeSettings()">Close</button>
+  </div>
+</div>
+
+<main class="container">
+  <div class="nav">
+    <h1>Citizen Dashboard</h1>
+    <div>
+      <button onclick="openSettings()">⚙️ Settings</button>
+      <button id="logout">Logout</button>
+    </div>
+  </div>
+
+  <section>
+    <h2>Report an Issue</h2>
+    <form id="reportForm">
+      <input name="title" placeholder="Title" required>
+      <textarea name="description" placeholder="Describe the issue"></textarea>
+      <select name="department_id">
+        <option value="">(Optional) Select department or leave for AI</option>
+        <option value="1">Water</option>
+        <option value="2">Sanitation</option>
+        <option value="3">PWD</option>
+        <option value="4">Electricity</option>
+      </select>
+      <div>
+        <button type="button" id="useGPS">Use My Location</button>
+        <input name="address" placeholder="Address">
+        <input name="latitude" id="lat" placeholder="Latitude">
+        <input name="longitude" id="lng" placeholder="Longitude">
+      </div>
+      <input type="file" name="image" accept="image/*">
+      <button type="submit">Report</button>
+    </form>
+    <div id="msg"></div>
+  </section>
+
+  <section>
+    <h2>Your Reports</h2>
+    <ul id="issuesList"></ul>
+  </section>
+</main>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const token = localStorage.getItem('token');
+if(!token) location.href='/';
+document.getElementById('logout').onclick = ()=> { localStorage.clear(); location.href='/' };
+// DOM references (IMPORTANT FIX)
+const settingsModal = document.getElementById('settingsModal');
+const stepOld = document.getElementById('stepOld');
+const stepOTP = document.getElementById('stepOTP');
+const oldPass = document.getElementById('oldPass');
+const otp = document.getElementById('otp');
+const newPass = document.getElementById('newPass');
+
+
+// SETTINGS
+function openSettings(){
+  settingsModal.style.display='flex';
+}
+function closeSettings(){
+  settingsModal.style.display='none';
+  stepOTP.style.display='none';
+  stepOld.style.display='block';
+}
+
+async function sendOTP(){
+  const oldPassword=oldPass.value;
+  if(!oldPassword) return alert('Enter old password');
+
+  const res=await fetch('/api/auth/send-change-otp',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+    body:JSON.stringify({oldPassword})
+  });
+  const j=await res.json();
+  if(!res.ok) return alert(j.error);
+  alert('OTP sent to your phone');
+  stepOld.style.display='none';
+  stepOTP.style.display='block';
+}
+
+async function verifyOTP(){
+  const otpVal=otp.value,newPassword=newPass.value;
+  if(!otpVal||!newPassword) return alert('Fill all fields');
+
+  const res=await fetch('/api/auth/verify-change-otp',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+    body:JSON.stringify({otp:otpVal,newPassword})
+  });
+  const j=await res.json();
+  if(!res.ok) return alert(j.error);
+  alert('Password changed successfully');
+  closeSettings();
+}
+// GPS location capture
+document.getElementById('useGPS').onclick = () => {
+  if(!navigator.geolocation) return alert('Geolocation not supported');
+  navigator.geolocation.getCurrentPosition(pos => {
+    document.getElementById('lat').value = pos.coords.latitude;
+    document.getElementById('lng').value = pos.coords.longitude;
+    document.getElementById('msg').innerText = 'Location captured';
+  }, err=>alert('Location error: '+err.message));
+};
+
+// Submit new report
+document.getElementById('reportForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const res = await fetch('/api/issues/report', { method:'POST', headers:{'Authorization':'Bearer '+token}, body:fd });
+  const j = await res.json();
+  document.getElementById('msg').innerText = j.success ? 'Reported successfully! ID: '+j.issueId : (j.error || 'Failed');
+  loadIssues();
+};
+
+// Countdown helpers
+const countdowns = {}; // {issueId: {seconds, status}}
+function secondsToReadable(sec){
+  if(sec===null||sec===undefined) return '—';
+  if(sec<=0) return '⚠️ Deadline Passed';
+  const d = Math.floor(sec/86400), h = Math.floor((sec%86400)/3600), m=Math.floor((sec%3600)/60), s=Math.floor(sec%60);
+  if(d>0) return `${d}d ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+// Load citizen issues
+async function loadIssues(){
+  const res = await fetch('/api/issues',{headers:{'Authorization':'Bearer '+token}});
+  const j = await res.json();
+  const ul = document.getElementById('issuesList'); ul.innerHTML='';
+
+  if(j.issues && j.issues.length){
+    j.issues.forEach(i=>{
+      const li = document.createElement('li');
+
+      li.innerHTML = `<strong>${i.title||'No title'}</strong> - <span class="status-badge status-${i.status}">${i.status}</span> - ${i.priority} <br>
+                      Dept: ${i.department_name || ''} <br> ${i.description || ''}`;
+      if(i.image_path) li.innerHTML += `<br><img src="${i.image_path}" class="preview">`;
+      // ===== SHOW DELETE REASON (HEAD DELETE) =====
+if (i.status === 'DELETED' || i.deleted_by_head === 1) {
+  li.innerHTML += `
+    <div style="margin-top:6px;color:#b30000;font-weight:600;">
+      ❌ Deleted by Department Head
+      ${i.head_delete_reason ? `<br><small>Reason: ${i.head_delete_reason}</small>` : ''}
+    </div>
+  `;
+}
+// ===== ESCALATION DISPLAY =====
+if (i.status === 'ESCALATED') {
+  li.innerHTML += `
+    <div style="margin-top:6px;color:#dc3545;font-weight:600;">
+      ⚠️ Issue escalated due to deadline breach
+    </div>
+  `;
+}
+
+
+
+      // Head deadline countdown
+      li.innerHTML += `<div>Supervisor DL: <span id="cd-${i.id}-supervisor">—</span></div>
+<div>Fieldworker DL: <span id="cd-${i.id}-fieldworker">—</span></div>
+`;
+
+
+      // Initialize countdown object
+      countdowns[i.id] = {
+  supervisor: null,
+  fieldworker: null,
+  status: i.status
+
+  
+};
+countdowns[i.id].status = i.status;
+
+//✅ SET SUPERVISOR DEADLINE
+if (i.supervisor_seconds != null) {
+  countdowns[i.id].supervisor = i.supervisor_seconds;
+  const elSup = document.getElementById(`cd-${i.id}-supervisor`);
+  if (elSup) elSup.textContent = secondsToReadable(i.supervisor_seconds);
+}
+
+// ✅ SET FIELDWORKER DEADLINE
+if (i.fieldworker_seconds != null) {
+  countdowns[i.id].fieldworker = i.fieldworker_seconds;
+  const elFW = document.getElementById(`cd-${i.id}-fieldworker`);
+  if (elFW) elFW.textContent = secondsToReadable(i.fieldworker_seconds);
+}
+
+      // Buttons container
+      const btnContainer = document.createElement('div');
+
+    
+// ===== DELETE BUTTON (FINAL SAFE LOGIC) =====
+const createdAt = new Date(i.created_at);
+const minutesPassed = (Date.now() - createdAt.getTime()) / 60000;
+
+const canShowCitizenDelete =
+  i.status === 'NEW' &&
+  i.status !== 'DELETED' &&
+  i.deleted_by_head !== 1 &&
+  minutesPassed <= 30;
+
+if (canShowCitizenDelete) {
+  const delBtn = document.createElement('button');
+  delBtn.textContent = `Delete (${Math.ceil(30 - minutesPassed)} min left)`;
+  delBtn.onclick = () => deleteIssue(i.id);
+  btnContainer.appendChild(delBtn);
+}
+
+
+      // Verify button for VERIFICATION status
+      if (
+  i.status === 'VERIFICATION' &&
+  i.resolved_by_citizen !== 1
+) {
+  const verBtn = document.createElement('button');
+  verBtn.textContent = 'Verify as Citizen';
+  verBtn.onclick = ()=>verifyByCitizen(i.id);
+  btnContainer.appendChild(verBtn);
+}
+
+
+// ===== TERMINAL STATES: NO BUTTONS =====
+if (
+  i.status === 'RESOLVED' ||
+  i.status === 'ESCALATED' ||
+  i.status === 'DELETED' ||
+  i.deleted_by_head === 1
+) {
+  btnContainer.innerHTML = '';
+}
+
+      li.appendChild(btnContainer);
+      ul.appendChild(li);
+
+      // Update head countdown display immediately
+      
+    });
+  } else ul.innerHTML='<li>No reports yet</li>';
+}
+
+
+
+// Actions
+async function verifyByCitizen(issueId){
+  const res = await fetch('/api/issues/verifyByCitizen',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+    body:JSON.stringify({issueId})
+  });
+  const j = await res.json(); 
+  alert(j.message||j.error); 
+  loadIssues();
+}
+
+async function deleteIssue(id){
+  if(!confirm('Delete this report? This cannot be undone.')) return;
+
+  const res = await fetch('/api/issues/' + id, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json'
+    }
+  });
+
+  const j = await res.json();
+
+if (!res.ok) {
+  alert(j?.error || 'Delete failed');
+  return;
+}
+alert(j?.message || 'Issue deleted successfully');
+
+  loadIssues();   // refresh UI
+}
+
+
+
+// Socket.io real-time updates
+const socket = io();
+socket.on('connect',()=>console.log('socket connected'));
+
+// Head countdown update
+socket.on('deadlineTick', payload => {
+  payload.forEach(p => {
+    const el = document.getElementById(`cd-${p.issueId}-${p.role}`);
+    if (!el) return;
+
+    if (
+      countdowns[p.issueId]?.status === 'RESOLVED' ||
+      countdowns[p.issueId]?.status === 'ESCALATED' ||
+      countdowns[p.issueId]?.status === 'DELETED'
+    ) return;
+
+    countdowns[p.issueId][p.role] = p.secondsLeft;
+    el.textContent = secondsToReadable(p.secondsLeft);
+    el.style.color = p.secondsLeft <= 0 ? 'red' : '';
+  });
+});
+
+
+// Escalation alerts
+socket.on('escalationAlert', data=>{
+  alert(`⚠️ Escalation: Issue ${data.issueId} escalated to ${data.role.toUpperCase()} in ${data.departmentName}`);
+  loadIssues();
+});
+
+// Fallback countdown tick
+setInterval(() => {
+  Object.keys(countdowns).forEach(issueId => {
+    const info = countdowns[issueId];
+
+    if (
+      info.status === 'RESOLVED' ||
+      info.status === 'ESCALATED' ||
+      info.status === 'DELETED'
+    ) return;
+
+    ['supervisor', 'fieldworker'].forEach(role => {
+      if (typeof info[role] !== 'number') return;
+
+      info[role] -= 1;
+      const el = document.getElementById(`cd-${issueId}-${role}`);
+      if (!el) return;
+
+      el.textContent = secondsToReadable(info[role]);
+      el.style.color = info[role] <= 0 ? 'red' : '';
+    });
+  });
+}, 1000);
+
+
+// Reload on events
+socket.on('issueUpdated',()=>loadIssues());
+socket.on('issueCreated',()=>loadIssues());
+socket.on('issueDeleted',()=>loadIssues());
+
+loadIssues();
+</script>
+</body>
+</html>

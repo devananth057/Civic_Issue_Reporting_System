@@ -1,0 +1,17 @@
+body { font-family: Arial, sans-serif; background:#f4f6fb; color:#222; margin:0; padding:0 }
+.container { max-width:1000px; margin:26px auto; background:#fff; padding:20px; border-radius:6px; box-shadow:0 8px 20px rgba(0,0,0,0.06) }
+h1 { margin-top:0 }
+input, textarea, select { width:100%; padding:8px; margin:8px 0; box-sizing:border-box; border:1px solid #ddd; border-radius:4px }
+button { padding:8px 14px; border-radius:6px; border:none; cursor:pointer; background:#1976d2; color:#fff }
+table { width:100%; border-collapse:collapse; margin-top:10px }
+table th, table td { padding:6px 8px; border:1px solid #eee; text-align:left; }
+.preview { max-width:200px; display:block; margin-top:6px; }
+.nav { display:flex; gap:10px; margin-bottom:12px; align-items:center }
+.status-badge { padding:3px 8px; border-radius:12px; font-size:0.9em; display:inline-block }
+.status-NEW{ background:#fff9c4 } .status-ASSIGNED{ background:#ffe082 } .status-IN_PROGRESS{ background:#90caf9 } .status-VERIFICATION{ background:#ffcc80 } .status-RESOLVED{ background:#c8e6c9 } .status-ESCALATED{ background:#ef9a9a }
+.small { color:#666; font-size:0.9em }
+.status-DELETED {
+  background: #343a40;
+}
+
+

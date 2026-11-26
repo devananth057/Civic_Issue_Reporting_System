@@ -1,0 +1,408 @@
+  <!doctype html>
+  <html>
+  <head>
+    <meta charset="utf-8">
+    <title>Supervisor - Water</title>
+    <link rel="stylesheet" href="/css/style.css">
+
+    <style>
+      .status-badge { padding: 2px 5px; border-radius: 3px; color:white; font-size:0.85em; }
+      .status-NEW { background: #007bff; }
+      .status-ASSIGNED { background: #ffc107; color:black; }
+      .status-IN_PROGRESS { background: #17a2b8; }
+      .status-VERIFICATION { background: #6c757d; }
+      .status-RESOLVED { background: #28a745; }
+
+      #addEmployeeForm { margin: 15px 0; padding: 10px; border: 1px solid #ccc; width: 300px; }
+      #addEmployeeForm input, #addEmployeeForm select { width: 100%; margin-bottom: 5px; }
+
+      /* 🔹 ADDED: STATUS BOXES */
+      .fw-status-boxes { display:flex; gap:20px; margin:20px 0; }
+      .fw-box { flex:1; border:1px solid #ccc; padding:10px; }
+      .fw-active { border-color:#28a745; }
+      .fw-working { border-color:#17a2b8; }
+      .fw-inactive { border-color:#dc3545; }
+    </style>
+  </head>
+
+  <body>
+  <main class="container">
+    <div class="nav">
+      <h1 id="deptTitle"></h1>
+      <button id="logout">Logout</button>
+    </div>
+
+    <!-- Add Employee -->
+    <form id="addEmployeeForm">
+  <input type="text" id="name" placeholder="Full Name" required>
+  <input type="text" id="phone" placeholder="Phone" required>
+  <input type="text" id="ward" placeholder="Ward" required>
+  <input type="password" id="password" placeholder="Password (min 6 chars)" required>
+
+  <button type="submit">Add Fieldworker</button>
+</form>
+
+
+    <!-- 🔹 ADDED: FIELDWORKER STATUS (NEXT STEP) -->
+    <section>
+      <h2>Fieldworkers Status</h2>
+      <div class="fw-status-boxes">
+        <div class="fw-box fw-active">
+          <h3>🟢 Active</h3>
+          <ul id="fwActiveList"></ul>
+        </div>
+        <div class="fw-box fw-working">
+          <h3>🔵 Working</h3>
+          <ul id="fwWorkingList"></ul>
+        </div>
+        <div class="fw-box fw-inactive">
+          <h3>🔴 Inactive</h3>
+          <ul id="fwInactiveList"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Assigned Issues</h2>
+      <table id="issuesTable">
+        <thead>
+          <tr>
+            <th>ID</th><th>Title</th><th>Status</th><th>Citizen</th>
+            <th>Supervisor DL</th><th>Fieldworker DL</th><th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+  /* ===========================================
+    BASIC SETUP
+  =========================================== */
+  const token = localStorage.getItem("token");
+  if (!token) location.href = "/";
+
+  document.getElementById("logout").onclick = () => {
+    localStorage.clear();
+    location.href = "/";
+  };
+
+  const dept = 1;
+  const deptNames = ["","Water","Sanitation","PWD","Electricity"];
+  document.getElementById("deptTitle").innerText = `Supervisor - ${deptNames[dept]}`;
+
+  const countdowns = {};
+
+  /* ===========================================
+    TIME FORMATTER
+  =========================================== */
+  function secondsToReadable(sec){
+    if(sec==null) return "—";
+    if(sec<=0) return "⚠️ Passed";
+    let d = Math.floor(sec / 86400);
+    let h = Math.floor((sec % 86400) / 3600);
+    let m = Math.floor((sec % 3600) / 60);
+    let s = sec % 60;
+    return d > 0 ? `${d}d ${h}:${m}:${s}` :
+      `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  /* ===========================================
+    LOAD FIELDWORKERS BY STATUS (ADDED)
+  =========================================== */
+  async function loadFieldworkersByStatus(){
+    try{
+      const res = await fetch(`/api/users/fieldworkersByStatus?department_id=${dept}`,{
+        headers:{ "Authorization":"Bearer "+token }
+      });
+      const j = await res.json();
+
+      fwActiveList.innerHTML="";
+      fwWorkingList.innerHTML="";
+      fwInactiveList.innerHTML="";
+
+      (j.active||[]).forEach(u=>fwActiveList.innerHTML+=`<li>${u.name}</li>`);
+      (j.working||[]).forEach(u=>fwWorkingList.innerHTML+=`<li>${u.name}</li>`);
+      (j.inactive||[]).forEach(u=>fwInactiveList.innerHTML+=`<li>${u.name}</li>`);
+    }catch(e){
+      console.error(e);
+    }
+  }
+
+  /* ===========================================
+    LOAD ISSUES (UNCHANGED)
+  =========================================== */
+  async function loadIssues(){
+    const res = await fetch(`/api/issues?department_id=${dept}`, {
+      headers: { "Authorization": "Bearer " + token }
+    });
+
+    const j = await res.json();
+    const tbody = document.querySelector("#issuesTable tbody");
+    tbody.innerHTML = "";
+
+    (j.issues || [])
+    .filter(i => i.status !== 'DELETED' && i.deleted_by_head !== 1)
+    .forEach(i => {
+    if (i.status === 'DELETED' || i.deleted_by_head === 1) return;
+
+      let actionHtml = "—";
+      // ✅ SUPERVISOR VERIFY BUTTON
+if (
+  i.status === 'VERIFICATION' &&
+  i.resolved_by_supervisor !== 1 &&
+  i.deleted_by_head !== 1
+) {
+  actionHtml = `
+    <button onclick="verifyBySupervisor(${i.id})">
+      Verify
+    </button>
+  `;
+}
+
+
+  if (
+  (
+    i.status === "ASSIGNED" &&
+    !i.fieldworker_assigned
+  )
+  ||
+  (
+    i.status === "ESCALATED" &&
+    i.fieldworker_seconds <= 0 &&
+    i.supervisor_seconds > 0
+  )
+) {
+ actionHtml = `
+  <select id="selFW${i.id}"></select>
+
+  <input type="datetime-local"
+         id="fwDL${i.id}"
+         style="margin-top:5px;width:160px;">
+
+  ${
+    i.status === "ESCALATED"
+      ? `<i style="color:#dc3545;font-size:12px">
+           Fieldworker deadline missed – reassign required
+         </i>`
+      : ""
+  }
+
+  <button onclick="assignFieldworker(${i.id})">Assign</button>
+`;
+
+
+  setTimeout(() => loadFieldworkerDropdown(i.id), 0);
+}
+
+
+      tbody.innerHTML += `
+        <tr>
+          <td>${i.id}</td>
+
+<td>
+  <strong>${i.title}</strong><br>
+  <small>${i.description || ''}</small>
+
+  ${i.address ? `<div><small>📍 ${i.address}</small></div>` : ''}
+
+  ${i.latitude && i.longitude ? `
+    <div>
+      <a href="https://www.google.com/maps?q=${i.latitude},${i.longitude}"
+         target="_blank">
+         🗺 View Location
+      </a>
+    </div>
+  ` : ''}
+
+  ${i.image_path ? `
+    <div>
+      <img src="${i.image_path}"
+           style="max-width:120px;max-height:80px;margin-top:5px;">
+    </div>
+  ` : ''}
+</td>
+
+<td>
+  <span class="status-badge status-${i.status}">
+    ${i.status}
+  </span>
+</td>
+
+<td>${i.citizen_name || '—'}</td>
+<td><span id="cd-${i.id}-supervisor">—</span></td>
+<td><span id="cd-${i.id}-fieldworker">—</span></td>
+
+<td>${actionHtml}</td>
+
+        </tr>`;
+        /* ✅ INITIALIZE DEADLINES */
+if (i.supervisor_seconds != null) {
+  const elSup = document.getElementById(`cd-${i.id}-supervisor`);
+  if (elSup) elSup.textContent = secondsToReadable(i.supervisor_seconds);
+}
+
+if (i.fieldworker_seconds != null) {
+  const elFW = document.getElementById(`cd-${i.id}-fieldworker`);
+  if (elFW) elFW.textContent = secondsToReadable(i.fieldworker_seconds);
+}
+
+    });
+  }
+
+  /* ===========================================
+    FIELDWORKER DROPDOWN (ONLY ACTIVE)
+  =========================================== */
+  async function loadFieldworkerDropdown(issueId){
+    const sel = document.getElementById("selFW"+issueId);
+    if (!sel) return;
+    const res = await fetch(`/api/users/dropdown?role=fieldworker&department_id=${dept}`,{
+      headers:{ "Authorization":"Bearer "+token }
+    });
+    const j = await res.json();
+
+    sel.innerHTML = `<option value="">Select Active Fieldworker</option>`;
+    (j.users||[]).forEach(u=>{
+      sel.innerHTML += `<option value="${u.phone}">${u.name}</option>`;
+    });
+  }
+
+  /* ===========================================
+    ASSIGN FIELDWORKER
+  =========================================== */
+  async function assignFieldworker(issueId){
+  const sel = document.getElementById("selFW" + issueId);
+  const dl = document.getElementById("fwDL" + issueId).value;
+
+  if (!sel.value) return alert("Select active fieldworker");
+  if (!dl) return alert("Set fieldworker deadline");
+
+  const res = await fetch("/api/issues/assignFieldworker", {
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      "Authorization":"Bearer " + token
+    },
+    body: JSON.stringify({
+      issueId,
+      phone: sel.value,
+      deadline: dl
+    })
+  });
+
+  const j = await res.json();
+  alert(j.message || j.error);
+
+  loadIssues();
+  loadFieldworkersByStatus();
+}
+
+async function verifyBySupervisor(issueId) {
+  const res = await fetch('/api/issues/verifyBySupervisor', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token
+    },
+    body: JSON.stringify({ issueId })
+  });
+
+  const j = await res.json();
+  if (!res.ok) {
+    alert(j.error || 'Verification failed');
+    return;
+  }
+
+  alert('Issue verified successfully');
+
+  /* ✅ STOP SUPERVISOR TIMER */
+  countdowns[`${issueId}-supervisor`] = 0;
+
+  /* ✅ UPDATE UI IMMEDIATELY */
+  const el = document.getElementById(`cd-${issueId}-supervisor`);
+  if (el) {
+    el.textContent = '✔️ Completed';
+    el.style.color = 'green';
+  }
+
+  loadIssues();
+}
+
+
+  /* ===========================================
+    ADD EMPLOYEE (UNCHANGED)
+  =========================================== */
+  document.getElementById("addEmployeeForm").onsubmit = async (e) => {
+  e.preventDefault();
+
+  const name = document.getElementById("name").value.trim();
+  const phone = document.getElementById("phone").value.trim();
+  const ward = document.getElementById("ward").value.trim();
+  const password = document.getElementById("password").value.trim();
+
+  if (password.length < 6) {
+    return alert("Password must be at least 6 characters");
+  }
+
+  const res = await fetch("/api/users/add", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + token
+    },
+    body: JSON.stringify({
+      name,
+      phone,
+      ward,
+      password,
+      role: "fieldworker",
+      department_id: dept
+    })
+  });
+
+  const j = await res.json();
+
+  if (!res.ok) {
+    alert(j.error || "Failed to add fieldworker");
+    return;
+  }
+
+  alert(j.message || "Fieldworker added successfully");
+  e.target.reset();
+  loadFieldworkersByStatus();
+};
+
+
+  /* ===========================================
+    SOCKET.IO
+  =========================================== */
+  const socket = io();
+  socket.on("issueUpdated", ()=>{ loadIssues(); loadFieldworkersByStatus(); });
+  socket.on("issueResolved", ()=>{ loadIssues(); loadFieldworkersByStatus(); });
+  /* 🔥 DEADLINE COUNTDOWN (SUPERVISOR DASHBOARD) */
+socket.on('deadlineTick', payload => {
+  payload.forEach(p => {
+    const el = document.getElementById(`cd-${p.issueId}-${p.role}`);
+    if (!el) return;
+
+    if (p.secondsLeft <= 0) {
+      el.textContent = '⚠️ Deadline Passed';
+      el.style.color = 'red';
+    } else {
+      el.textContent = secondsToReadable(p.secondsLeft);
+      el.style.color = '';
+    }
+  });
+});
+
+
+  /* ===========================================
+    INIT
+  =========================================== */
+  loadIssues();
+  loadFieldworkersByStatus();
+  </script>
+  </body>
+  </html>

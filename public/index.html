@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Civic Portal - Home</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <main class="container">
+    <h1>Civic Portal</h1>
+    <div class="nav">
+      <a href="/signup.html">Sign up</a>
+      <a href="#" id="showLogin">Login</a>
+    </div>
+    <section id="loginSection" style="display:none">
+      <h2>Login</h2>
+      <input id="phone" placeholder="Phone">
+      <input id="password" type="password" placeholder="Password">
+      <button id="doLogin">Login</button>
+      <div id="loginMsg" class="small"></div>
+    </section>
+  </main>
+<script>
+document.getElementById('showLogin').onclick = ()=> document.getElementById('loginSection').style.display='block';
+document.getElementById('doLogin').onclick = async ()=>{
+  const phone = document.getElementById('phone').value;
+  const password = document.getElementById('password').value;
+  const res = await fetch('/api/auth/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone, password }) });
+  const j = await res.json();
+  if (j.success) {
+    localStorage.setItem('token', j.token);
+    localStorage.setItem('role', j.user.role);
+    localStorage.setItem('department_id', j.user.department_id || '');
+    if (j.user.role === 'citizen') location.href = '/citizen/dashboard.html';
+    else if (j.user.role === 'head') location.href = `/head/${j.user.department_id===1?'water':j.user.department_id===2?'sanitation':j.user.department_id===3?'pwd':'electricity'}.html`;
+    else if (j.user.role === 'supervisor') location.href = `/supervisor/${j.user.department_id===1?'water':j.user.department_id===2?'sanitation':j.user.department_id===3?'pwd':'electricity'}.html`;
+    else if (j.user.role === 'fieldworker') location.href = `/fieldworker/${j.user.department_id===1?'water':j.user.department_id===2?'sanitation':j.user.department_id===3?'pwd':'electricity'}.html`;
+  } else { document.getElementById('loginMsg').innerText = j.error || 'Login failed'; }
+};
+</script>
+</body>
+</html>
